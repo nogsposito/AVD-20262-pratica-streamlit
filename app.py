@@ -1,173 +1,146 @@
-import altair as alt
+from typing import Literal
 import pandas as pd
 import streamlit as st
 
 from src.data_loader import load_data
 
-st.set_page_config(
-    page_title="Avaliação de Correlação entre Variáveis Quantitativas do Heart Disease Dataset",
-    layout="wide",
-)
-
-st.title("Avaliação de Correlação entre Variáveis Quantitativas do Heart Disease Dataset")
+st.set_page_config(page_title="SpotiStats", layout="wide")
 
 df = load_data()
 
-# Variáveis quantitativas do estudo (mesma lista VARS_QUANT do notebook de EDA)
-VARS_QUANT = ["age", "trestbps", "chol", "thalach", "oldpeak"]
+st.title("SpotiStats")
+st.markdown(
+    f":gray[O que anda junto com a popularidade das músicas? "
+    f"{len(df) // 1000} mil músicas lançadas entre {df['release_year'].min()} e {df['release_year'].max()}.]"
+)
 
-# Sidebar: filtros (variáveis + intervalo)
+METODOS: list[Literal["spearman", "pearson"]] = ["spearman", "pearson"]
+
+# Características comparadas com a popularidade (streams em log, por causa da assimetria)
+CARACTERISTICAS = {
+    "log_stream_count": "Streams",
+    "duration_minutes": "Duração (min)",
+    "danceability": "Dançabilidade",
+    "energy": "Energia",
+    "loudness": "Volume (dB)",
+    "tempo": "Andamento (BPM)",
+}
+
+OPCOES_STREAMS = [
+    1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000, 200_000, 500_000,
+    1_000_000, 2_000_000, 5_000_000, 10_000_000, 20_000_000,
+]
+
+def formata_streams(n):
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:g} mi"
+    return f"{n / 1_000:g} mil"
+
+# Sidebar
 with st.sidebar:
     st.header("Filtros")
 
-    variaveis = st.multiselect(
-        "Variáveis Quantitativas",
-        options=VARS_QUANT,
-        default=VARS_QUANT,
-        help="Selecione as variáveis quantitativas que deseja analisar no dashboard.",
+    caracteristicas = st.multiselect(
+        "Características comparadas",
+        options=list(CARACTERISTICAS),
+        default=list(CARACTERISTICAS),
+        format_func=lambda c: CARACTERISTICAS[c],
+        help="Quais características entram na comparação com a popularidade.",
     )
 
-    separar_por_classe = st.toggle(
-        "Distinguir por Classe",
-        value=False,
-        help="Colore a distribuição pela classe (doenca_cardiaca: Normal ou Cardíaco).",
+    metodo = st.radio(
+        "Método de correlação",
+        options=METODOS,
+        format_func=str.capitalize,
+        horizontal=True,
+        help="Pearson mede relação linear; Spearman compara a ordem dos valores.",
     )
 
-    # Um slider de intervalo para cada variável selecionada
-    intervalos = {}
-    for var in variaveis:
-        if pd.api.types.is_integer_dtype(df[var]):
-            minimo, maximo, passo = int(df[var].min()), int(df[var].max()), 1
+    separar_por_faixa = st.toggle(
+        "Separar por faixa de popularidade",
+        help="Compara as faixas baixa (0 a 32), média (33 a 65) e alta (66 a 100).",
+    )
+
+    st.subheader("Intervalos")
+    intervalos: dict[str, tuple[float, float]] = {"popularity": st.slider("Popularidade", 0, 100, (0, 100))}
+    for var in caracteristicas:
+        if var == "log_stream_count":
+            # Filtra pelos streams reais, mais fáceis de ler que o log
+            intervalos["stream_count"] = st.select_slider(
+                "Streams",
+                options=OPCOES_STREAMS,
+                value=(OPCOES_STREAMS[0], OPCOES_STREAMS[-1]),
+                format_func=formata_streams,
+            )
         else:
-            minimo, maximo, passo = float(df[var].min()), float(df[var].max()), 0.1
-        intervalos[var] = st.slider(
-            f"Intervalo de {var}",
-            min_value=minimo,
-            max_value=maximo,
-            value=(minimo, maximo),
-            step=passo,
-            key=f"intervalo_{var}",
-        )
+            minimo, maximo = float(df[var].min()), float(df[var].max())
+            intervalos[var] = st.slider(
+                CARACTERISTICAS[var],
+                min_value=minimo,
+                max_value=maximo,
+                value=(minimo, maximo),
+                step=0.01,
+                key=f"intervalo_{var}",
+            )
 
-# Mantém só os pacientes dentro de todos os intervalos escolhidos
+# Filtros e abas
 df_filtrado = df
-for var, (inicio, fim) in intervalos.items():
-    df_filtrado = df_filtrado[df_filtrado[var].between(inicio, fim)]
 
-st.caption(f"{len(df_filtrado)} de {len(df)} pacientes dentro dos intervalos escolhidos.")
+for coluna, (inicio, fim) in intervalos.items():
+    df_filtrado = df_filtrado[df_filtrado[coluna].between(inicio, fim)]
 
-# Dashboard 1: correlação (heatmap) à esquerda, distribuição (histograma) à direita
-col_correlacao, col_distribuicao = st.columns([1, 1.5])
+aba_d1, aba_d2 = st.tabs(["Correlação e distribuição", "Indicadores"])
 
-# Cores do histograma, em tons de sangue: vermelho arterial para Cardíaco, rosa claro para Normal
-COR_NORMAL = "#f4a6a6"
-COR_CARDIACO = "#c1121f"
-COR_HISTOGRAMA = COR_CARDIACO
-CORES_CLASSE = alt.Scale(domain=["Normal", "Cardíaco"], range=[COR_NORMAL, COR_CARDIACO])
+with aba_d1:
+    st.caption(f"{len(df_filtrado)} de {len(df)} músicas dentro dos filtros.")
 
-# Legenda das classes em texto, para caber no espaço livre da grade de histogramas
-LEGENDA_CLASSE = (
-    f"**Classe**  \n"
-    f":color[■]{{foreground=\"{COR_NORMAL}\"}} Normal  \n"
-    f":color[■]{{foreground=\"{COR_CARDIACO}\"}} Cardíaco"
-)
+    col_correlacao, col_distribuicao = st.columns([1, 1.5])
 
-with col_correlacao:
-    st.subheader("Correlação (Spearman)")
-
-    if len(variaveis) < 2:
-        st.warning("Selecione pelo menos 2 variáveis para calcular a correlação.")
-    elif len(df_filtrado) < 30:
-        st.warning("Poucos pacientes nos intervalos escolhidos para calcular a correlação.")
-    else:
-        # Matriz de correlação de Spearman das variáveis selecionadas, em formato longo (uma linha por célula)
-        corr = (
-            df_filtrado[variaveis]
-            .corr(method="spearman")
-            .rename_axis(index="var_y", columns="var_x")
-            .stack()
-            .rename("correlacao")
-            .reset_index()
-        )
-        # Só o triângulo inferior, sem a diagonal (sempre 1): a matriz é simétrica, o resto é repetição
-        ordem = {var: i for i, var in enumerate(variaveis)}
-        corr = corr[corr["var_y"].map(ordem) > corr["var_x"].map(ordem)]
-
-        base = alt.Chart(corr).encode(
-            x=alt.X(
-                "var_x:N",
-                title=None,
-                sort=variaveis[:-1],  # a última variável só aparece nas linhas
-                axis=alt.Axis(labelAngle=0, labelFontSize=14),
-            ),
-            y=alt.Y("var_y:N", title=None, sort=variaveis[1:], axis=alt.Axis(labelFontSize=14)),  # a primeira só nas colunas
-        )
-        heatmap = base.mark_rect().encode(
-            color=alt.Color(
-                "correlacao:Q",
-                title="Spearman",
-                scale=alt.Scale(scheme="redblue", domain=[-1, 1], reverse=True),
-                legend=alt.Legend(titleFontSize=14, labelFontSize=13),
-            ),
-            tooltip=["var_x", "var_y", alt.Tooltip("correlacao:Q", format=".2f")],
-        )
-        valores = base.mark_text(fontSize=16).encode(
-            text=alt.Text("correlacao:Q", format=".2f"),
-            color=alt.condition(
-                "abs(datum.correlacao) > 0.5", alt.value("white"), alt.value("black")
-            ),
+    with col_correlacao:
+        st.subheader("O que acompanha a popularidade")
+        st.caption(
+            f"Correlação de {metodo.capitalize()} de cada característica com a popularidade, "
+            "de -1 a 1. Perto de 0: não andam juntas."
         )
 
-        st.altair_chart(
-            (heatmap + valores).properties(height=380),
-            width="stretch",
-            alt="Mapa de calor (triângulo inferior, sem a diagonal) da correlação de Spearman entre as variáveis quantitativas selecionadas",
-        )
+        if not caracteristicas:
+            st.warning("Selecione pelo menos 1 característica.")
+        elif len(df_filtrado) < 30:
+            st.warning("Poucas músicas dentro dos filtros para calcular a correlação.")
+        elif df_filtrado["popularity"].nunique() < 2:
+            st.warning("Com um único valor de popularidade não dá para calcular correlação. Abra o intervalo.")
+        else:
+            # Provisório: tabela no lugar do gráfico de barras
+            corr = df_filtrado[caracteristicas].corrwith(df_filtrado["popularity"], method=metodo)
+            corr = corr.sort_values(key=abs, ascending=False).rename(index=CARACTERISTICAS)
+            st.dataframe(corr.round(2).rename("correlação"))
 
+# Distribuiçao e sobre os dados
 with col_distribuicao:
-    st.subheader("Distribuição")
+    st.subheader("Como as músicas se distribuem")
 
-    if not variaveis:
-        st.warning("Selecione pelo menos 1 variável para ver a distribuição.")
+    if not caracteristicas:
+        st.warning("Selecione pelo menos 1 característica.")
     elif df_filtrado.empty:
-        st.warning("Nenhum paciente dentro dos intervalos escolhidos.")
+        st.warning("Nenhuma música dentro dos filtros.")
     else:
-        # Com número par de variáveis não sobra espaço na grade: a legenda vai acima dela
-        if separar_por_classe and len(variaveis) % 2 == 0:
-            st.markdown(LEGENDA_CLASSE)
+        var = st.selectbox("Variável", options=caracteristicas, format_func=lambda c: CARACTERISTICAS[c])
 
-        # Um histograma por variável selecionada, em grade de 2 colunas (cada um com a sua escala)
-        for inicio in range(0, len(variaveis), 2):
-            colunas = st.columns(2)
-            for coluna, var in zip(colunas, variaveis[inicio : inicio + 2]):
-                histograma = (
-                    alt.Chart(df_filtrado[[var, "doenca_cardiaca"]])
-                    .mark_bar()
-                    .encode(
-                        x=alt.X(f"{var}:Q", bin=alt.Bin(maxbins=20), title=var),
-                        y=alt.Y("count()", title="Pacientes"),
-                        tooltip=[alt.Tooltip("count()", title="Pacientes")],
-                    )
-                    .properties(height=200)
-                )
-                if separar_por_classe:
-                    histograma = histograma.encode(
-                        color=alt.Color(
-                            "doenca_cardiaca:N",
-                            title="Classe",
-                            scale=CORES_CLASSE,
-                            legend=None,
-                        ),
-                        tooltip=["doenca_cardiaca", alt.Tooltip("count()", title="Pacientes")],
-                    )
-                else:
-                    histograma = histograma.mark_bar(color=COR_HISTOGRAMA)
+        # Provisório: resumo numérico no lugar do histograma
+        if separar_por_faixa:
+            resumo = df_filtrado.groupby("popularity_category")[var].describe()
+        else:
+            resumo = df_filtrado[var].describe().to_frame().T
+        st.dataframe(resumo.round(2))
 
-                with coluna:
-                    st.altair_chart(histograma, width="stretch", alt=f"Histograma da variável {var}")
+with st.expander("Sobre os dados"):
+    st.markdown(
+        "Fonte: [Spotify Artist Streaming Analytics (2015-2025)]"
+        "(https://www.kaggle.com/datasets/yogeshm01/spotify-artist-streaming-analytics-20152025), no Kaggle.\n\n"
+        "As características de áudio têm distribuição quase uniforme e praticamente nenhuma correlação "
+        "entre si, sinal de que o dataset é sintético. As conclusões valem para esta base, não para o "
+        "Spotify real. E correlação não indica causa."
+    )
 
-            # Número ímpar de variáveis: a legenda ocupa o espaço que sobrou na última linha
-            if separar_por_classe and len(colunas) == 2 and len(variaveis[inicio : inicio + 2]) == 1:
-                colunas[1].markdown(LEGENDA_CLASSE)
-
-# TODO: Dashboard 2 — KPIs (Aula 22)
+with aba_d2:
+    st.info("Os indicadores entram nas próximas etapas.")
