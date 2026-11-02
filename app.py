@@ -36,7 +36,7 @@ OPCOES_STREAMS = [
 COR_DESTAQUE = "#7F77DD"
 COR_NEUTRA = "#888780"
 NOMES_FAIXA = {"Low": "Baixa (0 a 32)", "Medium": "Média (33 a 65)", "High": "Alta (66 a 100)"}
-CORES_FAIXA = alt.Scale(domain=list(NOMES_FAIXA.values()), range=["#ED93B1", COR_NEUTRA, COR_DESTAQUE])
+CORES_FAIXA = alt.Scale(domain=list(NOMES_FAIXA.values()), range=["#3AA59D", COR_NEUTRA, COR_DESTAQUE])
 
 def formata_streams(n):
     if n >= 1_000_000:
@@ -107,7 +107,7 @@ aba_d1, aba_d2 = st.tabs(["Correlação e distribuição", "Indicadores"])
 with aba_d1:
     st.caption(f"{len(df_filtrado)} de {len(df)} músicas dentro dos filtros.")
 
-    col_correlacao, col_distribuicao = st.columns([1, 1.5])
+    col_correlacao, col_distribuicao = st.columns([1, 1.5], gap="large", border=True)
 
     with col_correlacao:
         st.subheader("O que acompanha a popularidade")
@@ -129,7 +129,8 @@ with aba_d1:
                 .corrwith(df_filtrado["popularity"], method=metodo)
                 .dropna()
                 .sort_values(key=abs, ascending=False)
-                .rename(index=CARACTERISTICAS)
+                # Correlação não tem unidade, então o nome vai sem o "(min)", "(dB)" etc.
+                .rename(index=lambda c: CARACTERISTICAS[c].split(" (")[0])
                 .rename_axis("caracteristica")
                 .reset_index(name="correlacao")
             )
@@ -162,7 +163,7 @@ with aba_d1:
             linha_zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=COR_NEUTRA).encode(x="x:Q")
 
             st.altair_chart(
-                (barras + rotulos + linha_zero).properties(height=45 * len(corr) + 30),
+                (barras + rotulos + linha_zero).properties(height=45 * len(corr) + 30, padding={"left": 20}),
                 width="stretch",
             )
 
