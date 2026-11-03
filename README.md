@@ -7,6 +7,8 @@ Repositório-modelo das Aulas 21, 22 e 23: construção de dois dashboards em St
 - Dashboard 1 = correlação + distribuição das variáveis quantitativas
 - Dashboard 2 = KPIs
 
+#### [Link da aplicação publicada no Streamlit](https://spotistats-avd.streamlit.app/)
+
 ## Setup
 
 Requer **Python 3.11 a 3.15**. Confira a sua versão antes de começar:
