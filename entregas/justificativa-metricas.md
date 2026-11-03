@@ -14,7 +14,7 @@
 - **Por que foi escolhida:** responde à pergunta de quem investe, "qual a chance de uma música virar sucesso?". Por ser proporção, permite comparar recortes de tamanhos diferentes.
 - **Público-alvo:** equipe de marketing da gravadora.
 - **Qual decisão pode ser apoiada por essa métrica?** em quais gêneros, países ou períodos concentrar o investimento. Nesta base a taxa fica entre 11,2% e 12,5% em todos os gêneros, então ela mostra que escolher gênero pela chance de sucesso não traz vantagem.
-- **O que comunica ao público-alvo:** "de cada 100 músicas deste recorte, cerca de 12 viram hit", ou que "existe uma chance de 12% dessa música se tornar um hit."
+- **O que comunica ao público-alvo:** "de cada 100 músicas deste recorte, cerca de 12 viram hit", ou que "Historicamente, existe uma chance de 12% dessa música se tornar um hit."
 
 ## Métrica 3: Música típica
 - **Variável:** `stream_count`
