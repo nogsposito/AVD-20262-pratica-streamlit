@@ -18,8 +18,9 @@ st.markdown(
 
 METODOS: list[Literal["spearman", "pearson"]] = ["spearman", "pearson"]
 
-# Características comparadas com a popularidade (streams em log, por causa da assimetria)
-CARACTERISTICAS = {
+# Variáveis quantitativas do Dashboard 1 (streams em log, por causa da assimetria)
+VARIAVEIS = {
+    "popularity": "Popularidade",
     "log_stream_count": "Streams",
     "duration_minutes": "Duração (min)",
     "danceability": "Dançabilidade",
@@ -35,9 +36,17 @@ OPCOES_STREAMS = [
 
 COR_DESTAQUE = "#7F77DD"
 COR_NEUTRA = "#888780"
+COR_BAIXA = "#3AA59D"
 NOMES_FAIXA = {"Low": "Baixa (0 a 32)", "Medium": "Média (33 a 65)", "High": "Alta (66 a 100)"}
+NOMES_CURTOS = {"Low": "baixa", "Medium": "média", "High": "alta"}
 EIXO_PCT = "replace(datum.label, '.', ',') + '%'"
-CORES_FAIXA = alt.Scale(domain=list(NOMES_FAIXA.values()), range=["#3AA59D", COR_NEUTRA, COR_DESTAQUE])
+CORES_FAIXA = alt.Scale(domain=list(NOMES_FAIXA.values()), range=[COR_BAIXA, COR_NEUTRA, COR_DESTAQUE])
+
+# Uma legenda só para a grade de histogramas, no lugar de uma em cada gráfico
+LEGENDA_FAIXAS = "  ".join(
+    f':color[■]{{foreground="{cor}"}} {nome}'
+    for nome, cor in zip(NOMES_FAIXA.values(), [COR_BAIXA, COR_NEUTRA, COR_DESTAQUE])
+)
 
 # Taxa de hits do catálogo inteiro, a referência dos indicadores do Dashboard 2
 TAXA_CATALOGO = 100 * (df["popularity_category"] == "High").mean()
@@ -56,6 +65,121 @@ def formata_valor(v, eh_streams):
 def formata_pct(x):
     return f"{x:.1f}%".replace(".", ",")
 
+def valores_do_grafico(dados, var):
+    # Streams em log10 (log natural / ln 10): cada unidade a mais no eixo é 10 vezes mais streams
+    return dados["log_stream_count"] / np.log(10) if var == "log_stream_count" else dados[var]
+
+def histograma(dados, var, separar_por_faixa):
+    eh_streams = var == "log_stream_count"
+    valores = valores_do_grafico(dados, var)
+
+    # Faixas com largura múltipla da precisão dos dados (0,01 na dançabilidade). Senão umas faixas
+    # pegam 5 valores possíveis e outras 4, e o gráfico ganha "dentes" que não existem nos dados
+    precisao = np.diff(np.unique(valores)).min() if valores.nunique() > 1 else 1.0
+    largura = max(precisao, np.ceil((valores.max() - valores.min()) / 20 / precisao) * precisao)
+    bordas = np.arange(valores.min() - precisao / 2, valores.max() + largura, largura)
+
+    # Um grupo por faixa de popularidade, ou um grupo só com todas as músicas
+    if separar_por_faixa:
+        grupos = {f: valores[dados["popularity_category"] == f] for f in NOMES_FAIXA}
+    else:
+        grupos = {"Todas": valores}
+
+    # % das músicas de cada grupo em cada intervalo (cada grupo soma 100%)
+    partes = []
+    for codigo, grupo in grupos.items():
+        if grupo.empty:
+            continue
+        contagem, _ = np.histogram(grupo, bins=bordas)
+        partes.append(pd.DataFrame({
+            "faixa": NOMES_FAIXA.get(codigo, codigo),
+            "inicio": bordas[:-1],
+            "fim": bordas[1:],
+            "meio": (bordas[:-1] + bordas[1:]) / 2,
+            "pct": 100 * contagem / len(grupo),
+            "intervalo": [
+                f"{formata_valor(a + precisao / 2, eh_streams)} a {formata_valor(b - precisao / 2, eh_streams)}"
+                for a, b in zip(bordas[:-1], bordas[1:])
+            ],
+        }))
+    dist = pd.concat(partes)
+
+    escala_x = alt.Scale(domain=[float(bordas[0]), float(bordas[-1])])
+    if eh_streams:
+        potencias = [p for p in range(3, 8) if bordas[0] <= p <= bordas[-1]]
+        eixo_x = alt.Axis(
+            title="Streams (escala log)",
+            values=potencias,
+            labelExpr="['1 mil', '10 mil', '100 mil', '1 mi', '10 mi'][datum.value - 3]",
+        )
+    else:
+        eixo_x = alt.Axis(title=VARIAVEIS[var], labelExpr="replace(datum.label, '.', ',')")
+    dicas = [
+        alt.Tooltip("intervalo:N", title="Intervalo"),
+        alt.Tooltip("pct:Q", title="% das músicas", format=".1f"),
+    ]
+
+    if separar_por_faixa:
+        grafico = alt.Chart(dist).mark_line(strokeWidth=2).encode(
+            x=alt.X("meio:Q", scale=escala_x, axis=eixo_x),
+            y=alt.Y("pct:Q", title="% da faixa", axis=alt.Axis(labelExpr=EIXO_PCT)),
+            color=alt.Color("faixa:N", scale=CORES_FAIXA, legend=None),
+            tooltip=[alt.Tooltip("faixa:N", title="Faixa"), *dicas],
+        )
+    else:
+        grafico = alt.Chart(dist).mark_bar(color=COR_DESTAQUE).encode(
+            x=alt.X("inicio:Q", bin="binned", scale=escala_x, axis=eixo_x),
+            x2="fim:Q",
+            y=alt.Y("pct:Q", title="% das músicas", axis=alt.Axis(labelExpr=EIXO_PCT)),
+            tooltip=dicas,
+        )
+    return grafico.properties(height=200)
+
+def resumo_distribuicoes(dados, variaveis, separar_por_faixa):
+    if not separar_por_faixa:
+        # Assimetria acima de 1 (para mais ou para menos): as músicas se concentram num dos lados
+        frases = []
+        for var in variaveis:
+            assimetria = float(valores_do_grafico(dados, var).skew())
+            if abs(assimetria) > 1:
+                lado = "baixos" if assimetria > 0 else "altos"
+                frases.append(f"{VARIAVEIS[var]} concentra as músicas nos valores mais {lado}")
+        if not frases:
+            return "Nenhuma variável é muito assimétrica: as músicas não se concentram num dos extremos."
+        texto = "; ".join(frases) + "."
+        if len(frases) < len(variaveis):
+            texto += " As demais variáveis não têm esse desequilíbrio."
+        return texto
+
+    # As faixas vêm da própria popularidade, então ela fica fora da comparação
+    comparaveis = [v for v in variaveis if v != "popularity"]
+    if not comparaveis:
+        return "As faixas são definidas pela própria popularidade. Escolha outras variáveis para comparar."
+
+    diferentes = []
+    for var in comparaveis:
+        valores = valores_do_grafico(dados, var)
+        medianas = {
+            f: valores[dados["popularity_category"] == f].median()
+            for f in NOMES_FAIXA
+            if (dados["popularity_category"] == f).any()
+        }
+        q1, q3 = valores.quantile([0.25, 0.75])
+        # Diferença entre medianas menor que 10% da faixa central dos dados: na prática, iguais
+        if len(medianas) >= 2 and max(medianas.values()) - min(medianas.values()) > 0.1 * (q3 - q1):
+            eh_streams = var == "log_stream_count"
+            detalhe = ", ".join(
+                f"{formata_valor(m, eh_streams)} na faixa {NOMES_CURTOS[f]}" for f, m in medianas.items()
+            )
+            diferentes.append(f"{VARIAVEIS[var]} (mediana de {detalhe})")
+
+    if not diferentes:
+        return "Em nenhuma variável as faixas se diferenciam: as linhas ficam sobrepostas."
+    texto = "As faixas se diferenciam em " + "; ".join(diferentes) + "."
+    if len(diferentes) < len(comparaveis):
+        texto += " Nas demais variáveis, praticamente não se diferenciam."
+    return texto
+
 # Com on_change="rerun" só a aba aberta roda, e cada aba mostra os próprios filtros
 aba_d1, aba_d2 = st.tabs(["Correlação e distribuição", "Indicadores"], key="aba", on_change="rerun")
 
@@ -64,13 +188,13 @@ if aba_d1.open:
     with st.sidebar:
         st.header("Filtros")
 
-        caracteristicas = st.multiselect(
-            "Características comparadas",
-            options=list(CARACTERISTICAS),
-            default=list(CARACTERISTICAS),
-            format_func=lambda c: CARACTERISTICAS[c],
-            help="Quais características entram na comparação com a popularidade.",
-            key="caracteristicas",
+        variaveis = st.multiselect(
+            "Variáveis quantitativas",
+            options=list(VARIAVEIS),
+            default=list(VARIAVEIS),
+            format_func=lambda v: VARIAVEIS[v],
+            help="Quais variáveis entram no heatmap e nos histogramas.",
+            key="variaveis",
             persist_state="page",
         )
 
@@ -86,18 +210,15 @@ if aba_d1.open:
 
         separar_por_faixa = st.toggle(
             "Separar por faixa de popularidade",
-            help="Compara as faixas baixa (0 a 32), média (33 a 65) e alta (66 a 100).",
+            help="Nos histogramas, compara as faixas baixa (0 a 32), média (33 a 65) e alta (66 a 100).",
             key="separar_por_faixa",
             persist_state="page",
         )
 
+        # Um slider de intervalo para cada variável escolhida
         st.subheader("Intervalos")
-        intervalos: dict[str, tuple[float, float]] = {
-            "popularity": st.slider(
-                "Popularidade", 0, 100, (0, 100), key="intervalo_popularity", persist_state="page"
-            )
-        }
-        for var in caracteristicas:
+        intervalos: dict[str, tuple[float, float]] = {}
+        for var in variaveis:
             if var == "log_stream_count":
                 # Filtra pelos streams reais, mais fáceis de ler que o log
                 intervalos["stream_count"] = st.select_slider(
@@ -108,10 +229,20 @@ if aba_d1.open:
                     key="intervalo_streams",
                     persist_state="page",
                 )
+            elif pd.api.types.is_integer_dtype(df[var]):
+                minimo_int, maximo_int = int(df[var].min()), int(df[var].max())
+                intervalos[var] = st.slider(
+                    VARIAVEIS[var],
+                    minimo_int,
+                    maximo_int,
+                    (minimo_int, maximo_int),
+                    key=f"intervalo_{var}",
+                    persist_state="page",
+                )
             else:
                 minimo, maximo = float(df[var].min()), float(df[var].max())
                 intervalos[var] = st.slider(
-                    CARACTERISTICAS[var],
+                    VARIAVEIS[var],
                     min_value=minimo,
                     max_value=maximo,
                     value=(minimo, maximo),
@@ -132,191 +263,121 @@ if aba_d1.open:
         col_correlacao, col_distribuicao = st.columns([1, 1.5], gap="large", border=True)
 
         with col_correlacao:
-            st.subheader("O que acompanha a popularidade")
+            st.subheader("Como as variáveis se relacionam")
             st.caption(
-                f"Correlação de {metodo.capitalize()} de cada característica com a popularidade, "
-                "de -1 a 1. Perto de 0: não andam juntas."
+                f"Correlação de {metodo.capitalize()} entre cada par de variáveis, de -1 a 1. Roxo: sobem juntas. "
+                "Verde: quando uma sobe, a outra desce. Cinza: não andam juntas."
             )
 
-            if not caracteristicas:
-                st.warning("Selecione pelo menos 1 característica.")
+            # Variável que não varia dentro dos filtros não tem correlação
+            validas = [v for v in variaveis if df_filtrado[v].nunique() > 1]
+            if len(variaveis) < 2:
+                st.warning("Selecione pelo menos 2 variáveis para calcular a correlação.")
             elif len(df_filtrado) < 30:
                 st.warning("Poucas músicas dentro dos filtros para calcular a correlação.")
-            elif df_filtrado["popularity"].nunique() < 2:
-                st.warning("Com um único valor de popularidade não dá para calcular correlação. Abra o intervalo.")
+            elif len(validas) < 2:
+                st.warning("Com esses intervalos, menos de 2 variáveis variam. Abra algum intervalo.")
             else:
-                # Uma linha por característica, da correlação mais forte para a mais fraca
+                # Correlação não tem unidade, então os nomes vão sem o "(min)", "(dB)" etc.
+                nomes = {v: VARIAVEIS[v].split(" (")[0] for v in validas}
+                ordem = list(nomes.values())
+
+                # Matriz de correlação em formato longo: uma linha por par de variáveis
                 corr = (
-                    df_filtrado[caracteristicas]
-                    .corrwith(df_filtrado["popularity"], method=metodo)
-                    .dropna()
-                    .sort_values(key=abs, ascending=False)
-                    # Correlação não tem unidade, então o nome vai sem o "(min)", "(dB)" etc.
-                    .rename(index=lambda c: CARACTERISTICAS[c].split(" (")[0])
-                    .rename_axis("caracteristica")
-                    .reset_index(name="correlacao")
+                    df_filtrado[validas]
+                    .corr(method=metodo)
+                    .rename(index=nomes, columns=nomes)
+                    .rename_axis("var_y")
+                    .reset_index()
+                    .melt(id_vars="var_y", var_name="var_x", value_name="correlacao")
                 )
+                # Só o triângulo de baixo, sem a diagonal: a matriz é espelhada e a diagonal é sempre 1
+                posicao = {nome: i for i, nome in enumerate(ordem)}
+                corr = corr[corr["var_y"].map(posicao) > corr["var_x"].map(posicao)]
                 # Abaixo de 0,05 o valor não quer dizer nada, então mostra "≈ 0"
-                corr["rotulo"] = corr["correlacao"].map(lambda r: "≈ 0" if abs(r) < 0.05 else formata_numero(r))
-                corr["posicao_rotulo"] = corr["correlacao"].clip(lower=0)
+                corr = corr.assign(
+                    rotulo=corr["correlacao"].map(lambda r: "≈ 0" if abs(r) < 0.05 else formata_numero(r)),
+                    forca=corr["correlacao"].abs(),
+                )
 
                 base = alt.Chart(corr).encode(
-                    y=alt.Y("caracteristica:N", sort=corr["caracteristica"].tolist(), title=None),
+                    x=alt.X("var_x:N", sort=ordem[:-1], title=None, axis=alt.Axis(labelAngle=-45, labelOverlap=False)),
+                    y=alt.Y("var_y:N", sort=ordem[1:], title=None),
                 )
-
-                # Destaca só correlações de 0,1 para cima; o resto fica cinza
-                cor = alt.condition("abs(datum.correlacao) >= 0.1", alt.value(COR_DESTAQUE), alt.value(COR_NEUTRA))
-                barras = base.mark_bar().encode(
-                    x=alt.X(
+                celulas = base.mark_rect().encode(
+                    color=alt.Color(
                         "correlacao:Q",
-                        scale=alt.Scale(domain=[-1, 1]),
                         title=None,
-                        axis=alt.Axis(values=[-1, -0.5, 0, 0.5, 1], labelExpr="replace(datum.label, '.', ',')"),
+                        # interpolate="rgb" vai do cinza ao roxo em linha reta, sem passar por tons de vermelho
+                        scale=alt.Scale(
+                            domain=[-1, 0, 1], range=[COR_BAIXA, COR_NEUTRA, COR_DESTAQUE], interpolate="rgb"
+                        ),
+                        legend=alt.Legend(orient="bottom", labelExpr="replace(datum.label, '.', ',')"),
                     ),
-                    color=cor,
                     tooltip=[
-                        alt.Tooltip("caracteristica:N", title="Característica"),
+                        alt.Tooltip("var_y:N", title="Variável"),
+                        alt.Tooltip("var_x:N", title="Com"),
                         alt.Tooltip("correlacao:Q", title="Correlação", format=".2f"),
                     ],
                 )
-                rotulos = base.mark_text(align="left", dx=4, fontSize=13).encode(
-                    x="posicao_rotulo:Q", text="rotulo:N", color=cor
-                )
-                linha_zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=COR_NEUTRA).encode(x="x:Q")
+                textos = base.mark_text(color="white", fontSize=13).encode(text="rotulo:N")
 
                 st.altair_chart(
-                    (barras + rotulos + linha_zero).properties(height=45 * len(corr) + 30, padding={"left": 20}),
+                    (celulas + textos).properties(
+                        width="container", height=60 * (len(ordem) - 1) + 40, padding={"left": 20}
+                    ),
                     width="stretch",
                 )
+                fora = [VARIAVEIS[v] for v in variaveis if v not in validas]
+                if fora:
+                    st.caption(f"Fora do heatmap por não variar dentro dos filtros: {', '.join(fora)}.")
 
-                principal = corr.iloc[0]
-                if abs(principal["correlacao"]) < 0.1:
-                    st.info("Nenhuma característica acompanha a popularidade nestes filtros: todas ficam perto de zero.")
+                pares = corr.sort_values("forca", ascending=False)
+                principal = pares.iloc[0]
+                if principal["forca"] < 0.1:
+                    st.info("Nenhum par de variáveis anda junto: todas as correlações ficam perto de zero.")
                 else:
                     texto = (
-                        f"{principal['caracteristica']} é o que mais acompanha a popularidade "
+                        f"O par que mais anda junto é {principal['var_y']} e {principal['var_x']} "
                         f"({formata_numero(principal['correlacao'])})."
                     )
-                    resto = corr.iloc[1:]
-                    if not resto.empty and resto["correlacao"].abs().max() < 0.05:
-                        texto += " As demais características ficam perto de zero."
+                    resto = pares.iloc[1:]
+                    if not resto.empty and resto["forca"].max() < 0.05:
+                        texto += " Os demais pares ficam perto de zero."
                     elif not resto.empty:
-                        texto += f" Em seguida vem {resto.iloc[0]['caracteristica']} ({resto.iloc[0]['rotulo']})."
+                        segundo = resto.iloc[0]
+                        texto += f" Em seguida vem {segundo['var_y']} e {segundo['var_x']} ({segundo['rotulo']})."
                     st.info(texto)
 
     # Distribuiçao e sobre os dados
     with col_distribuicao:
-        st.subheader("Como as músicas se distribuem")
+        st.subheader("Como cada variável se distribui")
 
-        if not caracteristicas:
-            st.warning("Selecione pelo menos 1 característica.")
+        if not variaveis:
+            st.warning("Selecione pelo menos 1 variável.")
         elif df_filtrado.empty:
             st.warning("Nenhuma música dentro dos filtros.")
         else:
-            var = st.selectbox(
-                "Variável",
-                options=caracteristicas,
-                format_func=lambda c: CARACTERISTICAS[c],
-                key="variavel",
-                persist_state="page",
-            )
-            eh_streams = var == "log_stream_count"
-
-            # Streams em log10 (log natural / ln 10): cada unidade a mais no eixo é 10 vezes mais streams
-            valores = df_filtrado["log_stream_count"] / np.log(10) if eh_streams else df_filtrado[var]
-            
-            # As faixas do histograma precisam ter largura múltipla da precisão dos dados (0,01 na dançabilidade).
-            # Senão umas faixas pegam 5 valores possíveis e outras 4, e o gráfico ganha "dentes" que não existem.
-            precisao = np.diff(np.unique(valores)).min() if valores.nunique() > 1 else 1.0
-            largura = max(precisao, np.ceil((valores.max() - valores.min()) / 20 / precisao) * precisao)
-            bordas = np.arange(valores.min() - precisao / 2, valores.max() + largura, largura)
-            
-            # Um grupo por faixa de popularidade, ou um grupo só com todas as músicas
             if separar_por_faixa:
-                grupos = {f: valores[df_filtrado["popularity_category"] == f] for f in NOMES_FAIXA}
-            else:
-                grupos = {"Todas": valores}
-
-            # % das músicas de cada grupo em cada intervalo (cada grupo soma 100%)
-            partes = []
-            for codigo, grupo in grupos.items():
-                if grupo.empty:
-                    continue
-                contagem, _ = np.histogram(grupo, bins=bordas)
-                partes.append(pd.DataFrame({
-                    "faixa": NOMES_FAIXA.get(codigo, codigo),
-                    "inicio": bordas[:-1],
-                    "fim": bordas[1:],
-                    "meio": (bordas[:-1] + bordas[1:]) / 2,
-                    "pct": 100 * contagem / len(grupo),
-                    "intervalo": [
-                        f"{formata_valor(a + precisao / 2, eh_streams)} a {formata_valor(b - precisao / 2, eh_streams)}"
-                        for a, b in zip(bordas[:-1], bordas[1:])
-                    ],
-                }))
-            dist = pd.concat(partes)
-
-            escala_x = alt.Scale(domain=[float(bordas[0]), float(bordas[-1])])
-            if eh_streams:
-                potencias = [p for p in range(3, 8) if bordas[0] <= p <= bordas[-1]]
-                eixo_x = alt.Axis(
-                    title="Streams (escala log)",
-                    values=potencias,
-                    labelExpr="['1 mil', '10 mil', '100 mil', '1 mi', '10 mi'][datum.value - 3]",
-                )
-            else:
-                eixo_x = alt.Axis(title=CARACTERISTICAS[var], labelExpr="replace(datum.label, '.', ',')")
-            dicas = [
-                alt.Tooltip("intervalo:N", title="Intervalo"),
-                alt.Tooltip("pct:Q", title="% das músicas", format=".1f"),
-            ]
-
-            if separar_por_faixa:
-
                 st.caption(
-                    "Cada linha é uma faixa de popularidade. A altura mostra quantos % das músicas da faixa "
-                    "caem em cada intervalo. Linhas sobrepostas: as faixas se distribuem do mesmo jeito."
+                    "Um gráfico por variável. Cada linha é uma faixa de popularidade, e a altura mostra "
+                    "quantos % das músicas da faixa caem em cada intervalo."
                 )
-
-                grafico = alt.Chart(dist).mark_line(strokeWidth=2.5).encode(
-                    x=alt.X("meio:Q", scale=escala_x, axis=eixo_x),
-                    y=alt.Y("pct:Q", title="% das músicas da faixa", axis=alt.Axis(labelExpr=EIXO_PCT)),
-                    color=alt.Color("faixa:N", title=None, scale=CORES_FAIXA, legend=alt.Legend(orient="top")),
-                    tooltip=[alt.Tooltip("faixa:N", title="Faixa"), *dicas],
-                )
-
-                nomes_curtos = {"Low": "baixa", "Medium": "média", "High": "alta"}
-                medianas = {f: grupo.median() for f, grupo in grupos.items() if not grupo.empty}
-                texto = "Mediana: " + ", ".join(
-                    f"{formata_valor(m, eh_streams)} na faixa {nomes_curtos[f]}" for f, m in medianas.items()
-                ) + "."
-                if len(medianas) >= 2:
-                    q1, q3 = valores.quantile([0.25, 0.75])
-                    maior = max(medianas, key=lambda f: medianas[f])
-                    # Diferença entre medianas menor que 10% da faixa central dos dados: na prática, iguais
-                    if max(medianas.values()) - min(medianas.values()) <= 0.1 * (q3 - q1):
-                        texto += " As faixas praticamente não se diferenciam."
-                    else:
-                        texto += f" A faixa {nomes_curtos[maior]} concentra os valores mais altos."
-            
+                st.markdown(LEGENDA_FAIXAS)
             else:
-                
-                st.caption("A altura de cada barra mostra quantos % das músicas caem naquele intervalo.")
-                grafico = alt.Chart(dist).mark_bar(color=COR_DESTAQUE).encode(
-                    x=alt.X("inicio:Q", bin="binned", scale=escala_x, axis=eixo_x),
-                    x2="fim:Q",
-                    y=alt.Y("pct:Q", title="% das músicas", axis=alt.Axis(labelExpr=EIXO_PCT)),
-                    tooltip=dicas,
+                st.caption(
+                    "Um gráfico por variável. A altura de cada barra mostra quantos % das músicas caem "
+                    "naquele intervalo."
                 )
 
-                q1, mediana, q3 = valores.quantile([0.25, 0.5, 0.75])
-                texto = (
-                    f"Mediana de {formata_valor(mediana, eh_streams)}. "
-                    f"Metade das músicas fica entre {formata_valor(q1, eh_streams)} e {formata_valor(q3, eh_streams)}."
-                )
+            # Grade de 2 colunas, um histograma por variável escolhida
+            for i in range(0, len(variaveis), 2):
+                colunas_grade = st.columns(2)
+                for col, var in zip(colunas_grade, variaveis[i:i + 2]):
+                    col.altair_chart(histograma(df_filtrado, var, separar_por_faixa), width="stretch")
 
-            st.altair_chart(grafico.properties(height=320), width="stretch")
-            st.info(texto)
+            st.info(resumo_distribuicoes(df_filtrado, variaveis, separar_por_faixa))
+
 
 if aba_d2.open:
     with aba_d2:
