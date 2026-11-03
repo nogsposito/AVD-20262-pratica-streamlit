@@ -223,8 +223,13 @@ if aba_d1.open:
 
             # Streams em log10 (log natural / ln 10): cada unidade a mais no eixo é 10 vezes mais streams
             valores = df_filtrado["log_stream_count"] / np.log(10) if eh_streams else df_filtrado[var]
-            bordas = np.histogram_bin_edges(valores, bins=20)
-
+            
+            # As faixas do histograma precisam ter largura múltipla da precisão dos dados (0,01 na dançabilidade).
+            # Senão umas faixas pegam 5 valores possíveis e outras 4, e o gráfico ganha "dentes" que não existem.
+            precisao = np.diff(np.unique(valores)).min() if valores.nunique() > 1 else 1.0
+            largura = max(precisao, np.ceil((valores.max() - valores.min()) / 20 / precisao) * precisao)
+            bordas = np.arange(valores.min() - precisao / 2, valores.max() + largura, largura)
+            
             # Um grupo por faixa de popularidade, ou um grupo só com todas as músicas
             if separar_por_faixa:
                 grupos = {f: valores[df_filtrado["popularity_category"] == f] for f in NOMES_FAIXA}
@@ -244,7 +249,7 @@ if aba_d1.open:
                     "meio": (bordas[:-1] + bordas[1:]) / 2,
                     "pct": 100 * contagem / len(grupo),
                     "intervalo": [
-                        f"{formata_valor(a, eh_streams)} a {formata_valor(b, eh_streams)}"
+                        f"{formata_valor(a + precisao / 2, eh_streams)} a {formata_valor(b - precisao / 2, eh_streams)}"
                         for a, b in zip(bordas[:-1], bordas[1:])
                     ],
                 }))
