@@ -36,6 +36,7 @@ OPCOES_STREAMS = [
 COR_DESTAQUE = "#7F77DD"
 COR_NEUTRA = "#888780"
 NOMES_FAIXA = {"Low": "Baixa (0 a 32)", "Medium": "Média (33 a 65)", "High": "Alta (66 a 100)"}
+EIXO_PCT = "replace(datum.label, '.', ',') + '%'"
 CORES_FAIXA = alt.Scale(domain=list(NOMES_FAIXA.values()), range=["#3AA59D", COR_NEUTRA, COR_DESTAQUE])
 
 # Taxa de hits do catálogo inteiro, a referência dos indicadores do Dashboard 2
@@ -264,17 +265,22 @@ if aba_d1.open:
                     labelExpr="['1 mil', '10 mil', '100 mil', '1 mi', '10 mi'][datum.value - 3]",
                 )
             else:
-                eixo_x = alt.Axis(title=CARACTERISTICAS[var])
+                eixo_x = alt.Axis(title=CARACTERISTICAS[var], labelExpr="replace(datum.label, '.', ',')")
             dicas = [
                 alt.Tooltip("intervalo:N", title="Intervalo"),
                 alt.Tooltip("pct:Q", title="% das músicas", format=".1f"),
             ]
 
             if separar_por_faixa:
-                st.caption("% das músicas de cada faixa de popularidade em cada intervalo. Cada linha soma 100%.")
+
+                st.caption(
+                    "Cada linha é uma faixa de popularidade. A altura mostra quantos % das músicas da faixa "
+                    "caem em cada intervalo. Linhas sobrepostas: as faixas se distribuem do mesmo jeito."
+                )
+
                 grafico = alt.Chart(dist).mark_line(strokeWidth=2.5).encode(
                     x=alt.X("meio:Q", scale=escala_x, axis=eixo_x),
-                    y=alt.Y("pct:Q", title="% das músicas da faixa"),
+                    y=alt.Y("pct:Q", title="% das músicas da faixa", axis=alt.Axis(labelExpr=EIXO_PCT)),
                     color=alt.Color("faixa:N", title=None, scale=CORES_FAIXA, legend=alt.Legend(orient="top")),
                     tooltip=[alt.Tooltip("faixa:N", title="Faixa"), *dicas],
                 )
@@ -292,12 +298,14 @@ if aba_d1.open:
                         texto += " As faixas praticamente não se diferenciam."
                     else:
                         texto += f" A faixa {nomes_curtos[maior]} concentra os valores mais altos."
+            
             else:
-                st.caption("% das músicas em cada intervalo.")
+                
+                st.caption("A altura de cada barra mostra quantos % das músicas caem naquele intervalo.")
                 grafico = alt.Chart(dist).mark_bar(color=COR_DESTAQUE).encode(
                     x=alt.X("inicio:Q", bin="binned", scale=escala_x, axis=eixo_x),
                     x2="fim:Q",
-                    y=alt.Y("pct:Q", title="% das músicas"),
+                    y=alt.Y("pct:Q", title="% das músicas", axis=alt.Axis(labelExpr=EIXO_PCT)),
                     tooltip=dicas,
                 )
 
@@ -418,7 +426,7 @@ if aba_d2.open:
                 )
 
             with col_popularidade:
-                st.subheader("Quanto rende subir na popularidade")
+                st.subheader("Quanto tende a subir na popularidade")
 
                 # Arredonda a popularidade para baixo de 5 em 5 (100 entra na faixa de 95)
                 faixa_pop = (df_sel["popularity"] // 5 * 5).clip(upper=95)
@@ -456,7 +464,7 @@ if aba_d2.open:
                     )
 
             with col_peso:
-                st.subheader("Quem fica com os streams")
+                st.subheader("Proporção de quantidade de músicas e streams por faixa de popularidade")
 
                 peso = df_sel.groupby("popularity_category").agg(
                     musicas=("stream_count", "size"), streams=("stream_count", "sum")
